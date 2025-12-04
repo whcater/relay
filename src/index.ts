@@ -227,7 +227,7 @@ async function handleClaudeToOpenAI(c: any) {
 
     // Non-streaming response
 
-    const openAIResult: TextResponse = await openAIResponse.json();
+    const openAIResult = (await openAIResponse.json()) as TextResponse;
 
     const claudeResponse = convertOpenAINonStreamToClaude(openAIResult);
     return c.json(claudeResponse, openAIResponse.status as any);

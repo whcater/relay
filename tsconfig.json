@@ -3,7 +3,7 @@
     "target": "ES2022",
     "module": "ESNext",
     "lib": ["ES2022"],
-    "moduleResolution": "bundler",
+    "moduleResolution": "Node",
     "resolveJsonModule": true,
     "allowSyntheticDefaultImports": true,
     "strict": true,
@@ -11,8 +11,9 @@
     "forceConsistentCasingInFileNames": true,
     "esModuleInterop": true,
     "isolatedModules": true,
-    "noEmit": true,
-    "types": ["@cloudflare/workers-types"]
+    "outDir": "./dist",
+    "types": ["node"],
+    "ignoreDeprecations": "5.0"
   },
   "include": ["src/**/*"]
 }
