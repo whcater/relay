@@ -12,6 +12,7 @@ import {
   TextResponse,
 } from "./converters";
 import { countClaudeTokens } from "./token";
+import { writeLog, RequestLogEntry, getCurrentLogFilePath } from "./logger";
 
 const copilotTokenCache = new Map<
   string,
@@ -52,6 +53,66 @@ async function getCopilotToken(apiKey: string): Promise<string> {
 }
 
 const app = new Hono();
+
+// Logging middleware
+app.use("*", async (c, next) => {
+  const startTime = Date.now();
+  const method = c.req.method;
+  const path = c.req.path;
+  const url = new URL(c.req.url);
+
+  // Collect request headers
+  const headers: Record<string, string> = {};
+  c.req.raw.headers.forEach((value, key) => {
+    headers[key] = value;
+  });
+
+  // Try to get request body (if JSON)
+  let body: any = undefined;
+  if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+    try {
+      const rawBody = await c.req.text();
+      if (rawBody) {
+        try {
+          body = JSON.parse(rawBody);
+        } catch {
+          body = rawBody; // Keep as string if not JSON
+        }
+        // Put body back for the actual handler
+        c.req.raw = new Request(c.req.raw, { body: rawBody });
+      }
+    } catch (error) {
+      console.error('Failed to read request body for logging:', error);
+    }
+  }
+
+  const logEntry: RequestLogEntry = {
+    timestamp: new Date().toISOString(),
+    method,
+    path,
+    headers,
+    body,
+    query: url.search,
+    ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
+    userAgent: c.req.header('user-agent'),
+  };
+
+  try {
+    await next();
+
+    // Log response status
+    logEntry.responseStatus = c.res.status;
+    logEntry.responseTime = Date.now() - startTime;
+  } catch (error) {
+    // Log error if request failed
+    logEntry.error = error instanceof Error ? error.message : String(error);
+    logEntry.responseTime = Date.now() - startTime;
+    throw error;
+  } finally {
+    // Write log entry
+    writeLog(logEntry);
+  }
+});
 
 // CORS
 app.use("*", cors());
@@ -302,11 +363,20 @@ app.post("*", async (c) => {
 });
 
 // ============================================================================
-// Health check
+// Health check and utilities
 // ============================================================================
 
 app.get("/health", (c) => {
   return c.json({ status: "ok" });
+});
+
+app.get("/logs/info", (c) => {
+  const logPath = getCurrentLogFilePath();
+  return c.json({
+    message: "Request logging is active",
+    currentLogFile: logPath,
+    note: "All requests are being logged to the file above"
+  });
 });
 
 export default app;
