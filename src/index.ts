@@ -354,6 +354,19 @@ app.post("*", async (c) => {
     return handleCountTokens(c);
   } else if (path.endsWith("/v1/messages/count_tokens/detailed")) {
     return handleCountTokensDetailed(c);
+  } else if (path.endsWith("/v1/messages/test-conversion")) {
+    // Test endpoint to see the converted OpenAI format
+    try {
+      const claudeRequest = await c.req.json();
+      const openaiRequest = convertClaudeRequestToOpenAI(claudeRequest);
+      return c.json({
+        original: claudeRequest,
+        converted: openaiRequest,
+        note: "This shows the conversion result without sending to OpenAI"
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
   } else {
     return c.json(
       { error: "Endpoint not supported. Use /v1/messages for Claude format" },

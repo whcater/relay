@@ -469,11 +469,17 @@ function convertClaudeMessagesToOpenAI(
 
       // Add the main message with content
       if (result.content || (result.toolCalls && result.toolCalls.length > 0)) {
-        openAIMessages.push({
+        const message: OpenAIMessage = {
           role: msg.role as "user" | "assistant",
           content: result.content,
-          tool_calls: result.toolCalls,
-        });
+        };
+
+        // Only add tool_calls if the array is not empty
+        if (result.toolCalls && result.toolCalls.length > 0) {
+          message.tool_calls = result.toolCalls;
+        }
+
+        openAIMessages.push(message);
       }
 
       // Add tool messages for tool_results
