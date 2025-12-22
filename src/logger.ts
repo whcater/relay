@@ -78,11 +78,11 @@ function formatLogEntry(entry: RequestLogEntry): string {
       ? entry.body
       : JSON.stringify(entry.body, null, 2);
 
-    if (bodyStr.length > 5000) {
-      logText += `Body (truncated):\n${bodyStr.substring(0, 5000)}...\n`;
-    } else {
+    // if (bodyStr.length > 5000) {
+    //   logText += `Body (truncated):\n${bodyStr.substring(0, 5000)}...\n`;
+    // } else {
       logText += `Body:\n${bodyStr}\n`;
-    }
+    // }
   }
 
   // Add response info if available

@@ -134,7 +134,8 @@ function isCopilot(url: string): boolean {
 }
 
 function isOpenAI(url: string): boolean {
-  return url.includes("api.openai.com");
+  // return url.includes("api.openai.com");
+  return url.includes("127.0.0.1:5000");
 }
 
 function getChatCompletionPath(baseUrl: string) {
@@ -181,7 +182,7 @@ async function handleClaudeToOpenAI(c: any) {
 
     const openaiRequest = convertClaudeRequestToOpenAI(claudeRequest);
 
-    const targetUrl = `https://${baseUrl}${getChatCompletionPath(baseUrl)}`;
+    const targetUrl = `http://${baseUrl}${getChatCompletionPath(baseUrl)}`;
 
     console.log("targetUrl: ", targetUrl);
 
