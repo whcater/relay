@@ -12,7 +12,15 @@ import {
   TextResponse,
 } from "./converters";
 import { countClaudeTokens } from "./token";
-import { writeLog, RequestLogEntry, getCurrentLogFilePath } from "./logger";
+import {
+  writeLog,
+  RequestLogEntry,
+  getCurrentLogFilePath,
+  writeRequestLog,
+  writeResponseLog,
+  RequestLogData,
+  ResponseLogData
+} from "./logger";
 
 const copilotTokenCache = new Map<
   string,
@@ -57,26 +65,27 @@ const app = new Hono();
 // Logging middleware
 app.use("*", async (c, next) => {
   const startTime = Date.now();
+  const requestTimestamp = new Date().toISOString();
   const method = c.req.method;
   const path = c.req.path;
   const url = new URL(c.req.url);
 
   // Collect request headers
-  const headers: Record<string, string> = {};
+  const requestHeaders: Record<string, string> = {};
   c.req.raw.headers.forEach((value, key) => {
-    headers[key] = value;
+    requestHeaders[key] = value;
   });
 
   // Try to get request body (if JSON)
-  let body: any = undefined;
+  let requestBody: any = undefined;
   if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
     try {
       const rawBody = await c.req.text();
       if (rawBody) {
         try {
-          body = JSON.parse(rawBody);
+          requestBody = JSON.parse(rawBody);
         } catch {
-          body = rawBody; // Keep as string if not JSON
+          requestBody = rawBody; // Keep as string if not JSON
         }
         // Put body back for the actual handler
         c.req.raw = new Request(c.req.raw, { body: rawBody });
@@ -86,31 +95,76 @@ app.use("*", async (c, next) => {
     }
   }
 
-  const logEntry: RequestLogEntry = {
-    timestamp: new Date().toISOString(),
+  // Write request log immediately and get requestId
+  const requestLogData: RequestLogData = {
+    timestamp: requestTimestamp,
     method,
     path,
-    headers,
-    body,
+    headers: requestHeaders,
+    body: requestBody,
     query: url.search,
     ip: c.req.header('x-forwarded-for') || c.req.header('x-real-ip'),
     userAgent: c.req.header('user-agent'),
   };
 
+  const requestId = writeRequestLog(requestLogData);
+
   try {
     await next();
 
-    // Log response status
-    logEntry.responseStatus = c.res.status;
-    logEntry.responseTime = Date.now() - startTime;
+    const responseTimestamp = new Date().toISOString();
+    const responseTime = Date.now() - startTime;
+
+    // Collect response headers
+    const responseHeaders: Record<string, string> = {};
+    c.res.headers.forEach((value, key) => {
+      responseHeaders[key] = value;
+    });
+
+    // Prepare response log data
+    const responseLogData: ResponseLogData = {
+      timestamp: responseTimestamp,
+      status: c.res.status,
+      responseTime,
+      headers: responseHeaders,
+      requestId, // Link to request using the same requestId
+    };
+
+    // Try to capture response body for non-streaming responses
+    const contentType = c.res.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      try {
+        // Clone the response to read the body without consuming it
+        const clonedRes = c.res.clone();
+        const responseBody = await clonedRes.json();
+        responseLogData.body = responseBody;
+      } catch (error) {
+        // If we can't read the body, just skip it
+        responseLogData.body = { _note: 'Could not capture response body' };
+      }
+    } else if (contentType && contentType.includes('text/event-stream')) {
+      responseLogData.body = { _note: 'Streaming response - body not captured' };
+    }
+
+    // Write response log with the same requestId
+    writeResponseLog(responseLogData);
+
   } catch (error) {
-    // Log error if request failed
-    logEntry.error = error instanceof Error ? error.message : String(error);
-    logEntry.responseTime = Date.now() - startTime;
+    const responseTimestamp = new Date().toISOString();
+    const responseTime = Date.now() - startTime;
+
+    // Log error response
+    const errorLogData: ResponseLogData = {
+      timestamp: responseTimestamp,
+      status: 500,
+      responseTime,
+      error: error instanceof Error ? error.message : String(error),
+      requestId, // Link to request using the same requestId
+    };
+
+    writeResponseLog(errorLogData);
+
     throw error;
-  } finally {
-    // Write log entry
-    writeLog(logEntry);
   }
 });
 
@@ -136,6 +190,11 @@ function isCopilot(url: string): boolean {
 function isOpenAI(url: string): boolean {
   // return url.includes("api.openai.com");
   return url.includes("127.0.0.1:5000");
+}
+
+function isAnthropicAPI(url: string): boolean {
+  // return url.includes("api.anthropic.com");
+  return url.includes("pmpjfbhq.cn-nb1.rainapp.top");
 }
 
 function getChatCompletionPath(baseUrl: string) {
@@ -302,6 +361,124 @@ async function handleClaudeToOpenAI(c: any) {
   }
 }
 
+async function handleAnthropicDirectProxy(c: any) {
+  try {
+    const apiKey =
+      c.req.header("x-api-key") ||
+      c.req.header("authorization")?.replace("Bearer ", "");
+
+    if (!apiKey) {
+      return c.json(
+        { error: { message: "Missing x-api-key or authorization header" } },
+        400 as any,
+      );
+    }
+
+    // Extract base URL from path (e.g., "api.anthropic.com")
+    const baseUrl = extractBaseUrl(c.req.path, "/v1/messages");
+
+    if (!baseUrl) {
+      return c.json(
+        {
+          error: {
+            message:
+              "Could not extract base URL from path. Format: /<base-url>/v1/messages",
+          },
+        },
+        400 as any,
+      );
+    }
+
+    // Parse request body
+    const rawBody = await c.req.text();
+    const requestBody = JSON.parse(rawBody);
+
+    const targetUrl = `https://${baseUrl}/v1/messages`;
+
+    console.log("Direct proxy to Anthropic API: ", targetUrl);
+
+    // Forward to Anthropic API directly without conversion
+    const requestHeaders: Record<string, string> = {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": c.req.header("anthropic-version") || "2023-06-01",
+    };
+
+    // Copy other relevant headers
+    const headersToCopy = ["anthropic-dangerous-direct-browser-access"];
+    for (const header of headersToCopy) {
+      const value = c.req.header(header);
+      if (value) {
+        requestHeaders[header] = value;
+      }
+    }
+
+    const anthropicResponse = await fetch(targetUrl, {
+      method: "POST",
+      headers: requestHeaders,
+      body: rawBody,
+    });
+
+    if (!anthropicResponse.ok) {
+      const errorBody = await anthropicResponse.text();
+      console.error("Anthropic API error:", errorBody);
+
+      // Try to parse error as JSON, otherwise return as plain text error
+      try {
+        const errorJson = JSON.parse(errorBody);
+        return c.json(errorJson, anthropicResponse.status as any);
+      } catch {
+        // Not JSON, return as error object
+        return c.json(
+          { error: { message: errorBody } },
+          anthropicResponse.status as any,
+        );
+      }
+    }
+
+    // Stream response if requested
+    if (requestBody.stream) {
+      c.header("Content-Type", "text/event-stream");
+
+      return stream(c, async (streamWriter) => {
+        const reader = anthropicResponse.body!.getReader();
+        const decoder = new TextDecoder();
+
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            await streamWriter.write(chunk);
+          }
+        } finally {
+          await streamWriter.close();
+        }
+      });
+    }
+
+    // Non-streaming response
+    const responseText = await anthropicResponse.text();
+
+    // Try to parse as JSON, otherwise return as text
+    try {
+      const responseBody = JSON.parse(responseText);
+      return c.json(responseBody, anthropicResponse.status as any);
+    } catch {
+      // If not JSON, return as text
+      c.header("Content-Type", "text/plain");
+      return c.text(responseText, anthropicResponse.status as any);
+    }
+  } catch (error: any) {
+    console.log("Internal server error: ", error);
+    return c.json(
+      { error: { message: `Internal server error: ${error.message}` } },
+      500 as any,
+    );
+  }
+}
+
 const handleCountTokens = async (c: any) => {
   try {
     const body = await c.req.json();
@@ -350,6 +527,15 @@ const handleCountTokensDetailed = async (c: any) => {
 app.post("*", async (c) => {
   const path = c.req.path;
   if (path.endsWith("/v1/messages")) {
+    // Extract base URL to determine which handler to use
+    const baseUrl = extractBaseUrl(path, "/v1/messages");
+
+    // If it's Anthropic API, use direct proxy without conversion
+    if (baseUrl && isAnthropicAPI(baseUrl)) {
+      return handleAnthropicDirectProxy(c);
+    }
+
+    // Otherwise, use the conversion handler
     return handleClaudeToOpenAI(c);
   } else if (path.endsWith("/v1/messages/count_tokens")) {
     return handleCountTokens(c);
